@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "rwse-checker"
+version = "0.0.1"
+description = ""
+authors = ["dmnc-grdnr <dmnc.crl.grdnr@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+dkpro-cassis = ">=0.9.1"
+transformers = "^4.48.1"
+torch = "^2.4.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
