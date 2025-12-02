@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "rwse-checker"
-version = "0.0.1"
+version = "0.0.2"
 description = ""
 authors = ["dmnc-grdnr <dmnc.crl.grdnr@gmail.com>"]
 license = "MIT"
