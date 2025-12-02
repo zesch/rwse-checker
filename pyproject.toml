@@ -11,8 +11,13 @@ python = "^3.9"
 dkpro-cassis = ">=0.9.1"
 transformers = "^4.48.1"
 torch = "^2.4.1"
-
+pytest = "^7.4.3"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "rwse_checker"
+]
