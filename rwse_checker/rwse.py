@@ -4,6 +4,7 @@ from pathlib import Path
 from transformers import pipeline, AutoTokenizer
 from typing import List, Dict, Union, Tuple
 import csv
+import math
 from typing import List
 
 T_SENTENCE = 'de.tudarmstadt.ukp.dkpro.core.api.segmentation.type.Sentence'
@@ -18,6 +19,7 @@ class RWSE_Checker:
         self,
         model_name: str,
         confusion_sets: Union[str, Path, List[List[str]]],
+        case_sensitive = False,
         gpu: int = -1
     ) -> None:
         """
@@ -29,6 +31,7 @@ class RWSE_Checker:
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.gpu = gpu
+        self.case_sensitive = case_sensitive
         self.confusion_sets = self._load_confusion_sets(confusion_sets)
         self.__mask_token = self._mask_token()
         self.pipe = pipeline("fill-mask", model=self.model_name, device=self.gpu)
@@ -61,9 +64,12 @@ class RWSE_Checker:
             + ")>"
         )
 
-    @staticmethod
-    def _process_confusion_set(conf_set: List[str]) -> Dict[str, List[str]]:
-        cleaned_set = [item.strip() for item in conf_set if item.strip()]
+    def _process_confusion_set(self, conf_set: List[str]) -> Dict[str, List[str]]:
+        if self.case_sensitive:
+            cleaned_set = [item.strip() for item in conf_set if item.strip()]
+        else:
+            cleaned_set = [item.strip().lower() for item in conf_set if item.strip()]
+
         if len(cleaned_set) < 2:
             raise ValueError("Each confusion set must have at least two items.")
         return {word: cleaned_set for word in cleaned_set}
@@ -127,7 +133,10 @@ class RWSE_Checker:
     # also called automatically within check, but might be useful to have exposed,
     # e.g. when wanting to show which tokens are in confusion sets without running the (costly) pipeline
     def in_confusion_sets(self, token) -> bool:
-        return token in self.confusion_sets
+        if self.case_sensitive:
+            return token in self.confusion_sets
+        else:
+            return token.lower() in self.confusion_sets
 
     def check(self, token: str, masked_sentence: str) -> List[Dict[str, float]]:
         """
@@ -137,6 +146,13 @@ class RWSE_Checker:
         :return: List of predictions with their scores.
         """
         
+        if not self.case_sensitive:
+            token = token.lower()
+            masked_sentence = " ".join([
+                    w if w == MASK else w.lower()
+                    for w in masked_sentence.split()
+                ])
+    
         if not self.in_confusion_sets(token):
             print(f"Token '{token}' not found in confusion sets. Not running pipeline.")
             return []
@@ -153,53 +169,84 @@ class RWSE_Checker:
         """
         results = []
         for token in tokens:
+            if not self.case_sensitive:
+                token = token.lower()
             if self.in_confusion_sets(token):
                 masked_sentence = ' '.join([MASK if t == token else t for t in tokens])
                 token_results = self.check(token, masked_sentence)
                 results.append(token_results)
         return results
 
-    def correct(self, token: str, masked_sentence: str, magnitude=10) -> str:
+    def correct(self, token: str, masked_sentence: str, magnitude=10) -> Tuple[str, float, bool]:
         """
         Suggests a correction (from the currently active confusion sets) for the given token in the context of the masked sentence.
         :param token: The token to check.
         :param masked_sentence: The sentence with a mask token in place of the token to check
         :param magnitude: The certainty threshold multiplier.
-        :return: Suggested correction or the original token if no correction is suggested.
+        :return: Tuple of (suggested correction, certainty, whether oov fallback was used). Returns (original token, certainty, whether oov fallback was used) if no better suggestion. 
+        Certainty here expresses the log-ratio. 
+        So a certainty of 1 means that the result is ten times bigger than the original. 
+        A certainty of 2 means the result is one hundred times bigger, etc.
         """
+
+        # Lowercase handling except MASK
+        if not self.case_sensitive:
+            token = token.lower()
+            masked_sentence = " ".join([
+                w if w == MASK else w.lower()
+                for w in masked_sentence.split()
+            ])
+
+        # --- Subword fallback logic ---
+        subwords = self.tokenizer.tokenize(token)
+        if len(subwords) == 1 and subwords[0] == token:
+            search_token = token
+            oov_fallback_used = False
+        else:
+            search_token = subwords[0].lstrip('##')
+            oov_fallback_used = True
+            print(f"Token '{token}' not in vocabulary; using first subword fallback '{search_token}'.")
 
         results = self.check(token, masked_sentence)
 
-        # Return original token if no predictions
+        # Return original/fallback if no predictions
         if not results:
-            return token
+            print("No predictions, returning original or fallback token.")
+            return search_token, 0, oov_fallback_used
 
-        # Find score for original token
         target_score = None
         for result in results:
-            if result["token_str"] == token:
+            # Use sequence inclusion for robustness
+            if search_token in str(result.get("sequence", "")):
                 target_score = result["score"]
                 break
 
-        # If original not found among predictions, return it unchanged, as we have no basis for comparison
         if target_score is None:
-            return token
-        
+            print(f"Token '{search_token}' not found in any predicted sequence; returning fallback.")
+            return search_token, 0, oov_fallback_used
+
         threshold = min(target_score * magnitude, 1.0)
-        
-        # Find best alternative above threshold
-        best_token = token
+
+        best_token = search_token
         best_score = target_score
 
         for result in results:
-            candidate = result["token_str"]
+            candidate = str(result["token_str"])
             score = result["score"]
-            # Only consider alternatives above threshold and not equal to input
-            if candidate != token and score > threshold and score > best_score:
+            # Only consider alternatives above threshold and not equal to input/fallback
+            if candidate != search_token and score > threshold and score > best_score:
                 best_token = candidate
                 best_score = score
 
-        return best_token
+        # Certainty: order-of-magnitude difference compared to original/fallback
+        if best_token == search_token:
+            certainty = 0.0
+        elif best_score > 0:
+            certainty = math.log10(best_score) - math.log10(target_score)
+        else:
+            certainty = 0.0
+
+        return best_token, certainty, oov_fallback_used
 
 if __name__ == "__main__":
     rwse = RWSE_Checker(

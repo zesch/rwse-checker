@@ -1,3 +1,4 @@
+import pytest
 from rwse_checker.rwse import RWSE_Checker
 from pathlib import Path
 from cassis import Cas, load_cas_from_xmi
@@ -25,11 +26,13 @@ def test_correct():
         model_name="bert-base-uncased"
     )
     
-    correction = rwse.correct("there", "I want to buy __MASK__ cars.")
+    correction, certainty, _ = rwse.correct("there", "I want to buy __MASK__ cars.")
     assert correction == "their"
+    assert certainty == pytest.approx(2.1128, 0.001)
 
-    correction = rwse.correct("too", "I want __MASK__ buy their cars.")
+    correction, certainty, _ = rwse.correct("too", "I want __MASK__ buy their cars.")
     assert correction == "to"
+    assert certainty == pytest.approx(5.3800, 0.001)
 
 def test_models():
     token = "there"

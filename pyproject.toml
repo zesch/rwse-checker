@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "rwse-checker"
-version = "0.0.2"
-description = ""
+version = "0.0.4"
+description = "Finding and correcting real-word spelling errors using masked language models."
 authors = ["dmnc-grdnr <dmnc.crl.grdnr@gmail.com>"]
 license = "MIT"
 readme = "README.md"
