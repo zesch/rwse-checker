@@ -5,6 +5,7 @@ from transformers import pipeline, AutoTokenizer
 from typing import List, Dict, Union, Tuple
 import csv
 import math
+import torch
 from typing import List
 
 T_SENTENCE = 'de.tudarmstadt.ukp.dkpro.core.api.segmentation.type.Sentence'
@@ -158,9 +159,85 @@ class RWSE_Checker:
             return []
 
         results = self.pipe(self.replace_generic_mask(masked_sentence), targets=self.confusion_sets[token])
-        
+
         return results
-    
+
+    def check_multi(self, token: str, masked_sentence: str) -> List[Dict[str, float]]:
+        """Like :meth:`check`, but scores every confusion-set member as a
+        span of one *or more* sub-word tokens.
+
+        :meth:`check` relies on the fill-mask pipeline's ``targets=``
+        mechanism, which can only score candidates that are a *single*
+        vocabulary token; multi-sub-word words (e.g. "Gepäck" ->
+        ``geb`` ``##ack``) are silently replaced by their first sub-word
+        and scored as noise. This method instead, for each candidate,
+        masks the slot with as many ``[MASK]`` tokens as the candidate
+        has sub-words, runs one forward pass, and scores the candidate by
+        the **mean** sub-word log-probability (length-normalised so that
+        candidates of unequal sub-word length compare fairly).
+
+        The returned ``score`` is ``exp(mean log-prob)`` — a
+        probability-like value in [0, 1] that, for single-token
+        candidates, reproduces the probability :meth:`check` returns. The
+        result shape ``{token_str, score, sequence}`` mirrors
+        :meth:`check`, sorted by descending score.
+
+        :param token: the token to check (must be in a confusion set).
+        :param masked_sentence: the sentence with ``__MASK__`` (the
+            generic placeholder) in place of the token to check.
+        :return: list of per-candidate ``{token_str, score, sequence}``,
+            highest score first; empty if the token is not in a confusion
+            set.
+        """
+        if not self.case_sensitive:
+            token = token.lower()
+            masked_sentence = " ".join(
+                w if w == MASK else w.lower() for w in masked_sentence.split()
+            )
+
+        if not self.in_confusion_sets(token):
+            print(f"Token '{token}' not found in confusion sets. Not running pipeline.")
+            return []
+
+        model = self.pipe.model
+        device = model.device
+        mask_id = self.tokenizer.mask_token_id
+
+        results: List[Dict[str, float]] = []
+        for candidate in self.confusion_sets[token]:
+            subwords = self.tokenizer.tokenize(candidate)
+            n = len(subwords)
+            if n == 0:
+                continue
+            filled = masked_sentence.replace(
+                MASK, " ".join([self.__mask_token] * n)
+            )
+            enc = self.tokenizer(filled, return_tensors="pt").to(device)
+            ids = enc["input_ids"][0]
+            mask_positions = (ids == mask_id).nonzero(as_tuple=True)[0]
+            if len(mask_positions) != n:
+                # Tokenisation of the filled sentence didn't yield the
+                # expected number of mask slots — skip this candidate.
+                continue
+            with torch.no_grad():
+                logits = model(**enc).logits[0]
+            log_probs = logits.log_softmax(-1)
+            sub_ids = self.tokenizer.convert_tokens_to_ids(subwords)
+            total = sum(
+                log_probs[pos, sid].item()
+                for pos, sid in zip(mask_positions.tolist(), sub_ids)
+            )
+            results.append(
+                {
+                    "token_str": candidate,
+                    "score": math.exp(total / n),
+                    "sequence": filled,
+                }
+            )
+
+        results.sort(key=lambda r: -r["score"])
+        return results
+
     def check_sentence(self, tokens: List[str]) -> List[List[Dict[str, float]]]:
         """
         Checks all tokens in the given sentence.
