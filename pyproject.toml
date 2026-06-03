@@ -9,8 +9,18 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 dkpro-cassis = ">=0.9.1"
-transformers = "^4.48.1"
-torch = "^2.4.1"
+# Lower bound only: the checker uses the long-stable pipeline /
+# AutoTokenizer / AutoModelForMaskedLM API, which is unchanged across
+# transformers 4.x and 5.x. A caret cap (<5.0) needlessly clashed with
+# consumers on transformers 5.x (the normalization fork runs 5.2).
+transformers = ">=4.48.1"
+torch = ">=2.4.1"
+
+# pytest is a test-only tool, not a runtime dependency. Keeping it here
+# (a dev group) rather than under [tool.poetry.dependencies] prevents it
+# from constraining consumers that depend on rwse-checker as a path dep
+# (the normalization fork pins pytest ^8, which clashed with ^7.4.3).
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
 
 [build-system]
